@@ -32,9 +32,23 @@ In modern baseball, batters enter the box with pitcher patterns already memorize
 The system operates on a modular **4-Layer Architecture** to ensure scalability and maintainability.
 이 시스템은 확장성과 유지보수성을 보장하기 위해 모듈화된 **4계층 아키텍처**로 작동합니다.
 
+### 🏗 System Architecture Diagram (시스템 아키텍처 다이어그램)
+
 ```mermaid
 graph TD
-    A[Data Ingestion] -->|Cleaned Data| B(Physics Engine)
-    B -->|Trajectory & VAA/HAA| C(Predictive Models)
-    C -->|Probabilities| D(Strategy Engine)
-    D -->|Optimal Decision| E[Client Dashboard]
+    subgraph Data Layer [데이터 계층]
+        D1[(Statcast DB)] -->|Raw Data| L1[Data Loader]
+        L1 -->|Preprocessing| L2[Feature Engineer]
+    end
+
+    subgraph Core Engine [핵심 엔진]
+        L2 -->|9-Param Physics| P1[Physics Engine]
+        P1 -->|Trajectory (x,y,z)| M1[AI Models]
+        M1 -->|Probabilities| S1[Strategy Engine]
+        S1 -->|Risk & Game Theory| D2[Decision Maker]
+    end
+
+    subgraph Application Layer [응용 계층]
+        D2 -->|Recommend| UI[Streamlit Dashboard]
+        UI -->|Feedback| U[User / Coach]
+    end

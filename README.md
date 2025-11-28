@@ -34,6 +34,8 @@ The system operates on a modular **4-Layer Architecture** to ensure scalability 
 
 ### 🏗 System Architecture Diagram (시스템 아키텍처 다이어그램)
 
+### 🏗 System Architecture Diagram (시스템 아키텍처 다이어그램)
+
 ```mermaid
 graph TD
     subgraph Data Layer [데이터 계층]

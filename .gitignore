@@ -1,0 +1,20 @@
+# 가상 환경 (용량이 매우 큼)
+venv/
+env/
+.env
+
+# 파이썬 컴파일 파일 (불필요)
+__pycache__/
+*.pyc
+
+# 데이터 파일 (깃허브는 100MB 이상 업로드 불가 & 보안)
+data/*.parquet
+data/*.csv
+*.pkl
+
+# 맥/윈도우 시스템 파일
+.DS_Store
+Thumbs.db
+
+# VS Code 설정 (개인 설정이므로 제외 가능)
+.vscode/

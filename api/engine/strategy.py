@@ -2,49 +2,66 @@ import random
 
 class StrategyEngine:
     """
-    SRS REQ-STR-01, 02: 게임 이론 및 xRV 기반 투구 추천 엔진
+    [V4.0] Context-Aware Strategy Engine
+    경기 상황(볼카운트, 주자, 아웃)에 따라 최적의 구종과 로케이션을 추천
     """
     def __init__(self):
-        # xRV (Expected Run Value) 매트릭스 (가상의 데이터)
-        # 행: 타자 클러스터 ID, 열: 구종 및 결과
-        # 값이 낮을수록 투수에게 유리 (실점 확률 감소)
-        self.xrv_matrix = {
-            0: {"FF": 0.05, "SL": -0.02, "CB": 0.01}, # 공격적 컨택터 -> 슬라이더 유리
-            1: {"FF": -0.05, "SL": 0.03, "CB": 0.02}, # 신중형 -> 직구로 카운트 잡기 유리
-            2: {"FF": 0.10, "SL": 0.08, "CB": 0.05},  # 선구안 -> 그나마 커브가 나음
-            3: {"FF": -0.02, "SL": -0.15, "CB": -0.10}, # 공풍기 -> 변화구 대박 유리
-            4: {"FF": 0.00, "SL": -0.20, "CB": -0.05}   # 배드볼 히터 -> 슬라이더 유인구 최강
+        # 구종별 기본 특성 (가정)
+        self.pitch_specs = {
+            "FF": {"desc": "High Fastball", "target": (0.0, 3.5)}, # 하이 패스트볼
+            "SL": {"desc": "Low-Away Slider", "target": (0.5, 1.5)}, # 바깥쪽 낮은 슬라이더
+            "CH": {"desc": "Low Changeup", "target": (-0.5, 1.5)}, # 몸쪽 낮은 체인지업
+            "CB": {"desc": "Low Curve", "target": (0.0, 1.0)}, # 낮게 떨어지는 커브
+            "SI": {"desc": "Sinker (Double Play)", "target": (0.0, 1.5)} # 땅볼 유도 싱커
         }
 
-    def recommend_pitch(self, cluster_id: int, ball_count: str):
+    def recommend_pitch(self, arsenal: list, context: dict):
         """
-        타자 성향(Cluster)과 볼카운트를 고려하여 최적의 구종을 추천합니다.
+        상황별 로직 트리 (Decision Tree)
         """
-        # 1. 해당 타자에게 유리한 구종들의 xRV 가져오기
-        options = self.xrv_matrix.get(cluster_id, {"FF": 0, "SL": 0, "CB": 0})
+        balls = context.get('balls', 0)
+        strikes = context.get('strikes', 0)
+        runners = [context.get('runner_on_1b'), context.get('runner_on_2b'), context.get('runner_on_3b')]
+        has_runners = any(runners)
         
-        # 2. 볼카운트 상황 보정 (Heuristic Rule)
-        # 예: 3-0, 3-1 불리한 카운트에서는 직구(FF) 비율 높임
-        if ball_count in ["3-0", "3-1"]:
-            options["FF"] -= 0.1  # 직구의 가치를 높임 (강제성)
-
-        # 2스트라이크 이후에는 유인구(SL, CB) 가치 높임
-        if "2S" in ball_count or ball_count == "0-2":
-            options["SL"] -= 0.05
-            options["CB"] -= 0.05
-
-        # 3. 최적 전략 선정 (가장 낮은 xRV를 가진 구종 찾기)
-        # REQ-STR-02: Entropy Mixing (패턴 노출 방지를 위해 1등만 뽑지 않고 확률적으로 섞음)
-        # 여기서는 간단하게 가장 좋은 구종을 메인으로 추천
-        best_pitch = min(options, key=options.get)
-        min_xrv = options[best_pitch]
+        # 1. 위기 상황 (주자 있음 + 아웃 카운트 적음) -> 땅볼 유도(Double Play)
+        if context.get('runner_on_1b') and context.get('outs', 0) < 2:
+            priority = ["SI", "CH", "FS", "FF"] # 싱커/체인지업 우선
+            strategy_name = "🚨 Double Play Situation"
+            reason = "병살타 유도를 위해 무브먼트가 큰 떨어지는 공을 추천합니다."
         
-        # 추천 사유 생성
-        reasoning = f"타자 유형(ID:{cluster_id}) 상대로 '{best_pitch}'의 기대 실점(xRV)이 {min_xrv}로 가장 낮음."
+        # 2. 투수 유리 (2 Strikes) -> 유인구 (Chase)
+        elif strikes == 2:
+            priority = ["SL", "CB", "FS", "FF"] # 변화구 유인구 우선
+            strategy_name = "⚔️ Put Away (Strikeout)"
+            reason = "타자가 몰려있습니다. 존 바깥으로 빠지는 변화구로 헛스윙을 유도하세요."
+            
+        # 3. 타자 유리 (3 Balls) -> 존 공략 (Challenge)
+        elif balls == 3:
+            priority = ["FF", "SI", "FC"] # 직구 계열 우선
+            strategy_name = "🛡️ Challenge Zone"
+            reason = "볼넷은 위험합니다. 가장 자신 있는 직구로 존을 공략하세요."
+            
+        # 4. 초구 또는 일반 상황 -> 카운트 잡기
+        else:
+            priority = ["FF", "SI", "SL", "CH"]
+            strategy_name = "🎯 Get Ahead"
+            reason = "유리한 카운트를 선점하기 위해 초구 스트라이크를 잡으세요."
+
+        # 투수가 던질 수 있는 구종 중 우선순위가 높은 것 선택
+        best_pitch = "FF" # Default
+        for p in priority:
+            if p in arsenal:
+                best_pitch = p
+                break
+        
+        spec = self.pitch_specs.get(best_pitch, {"desc": "Standard", "target": (0.0, 2.5)})
         
         return {
             "recommended_pitch": best_pitch,
-            "xrv_score": min_xrv,
-            "reasoning": reasoning,
-            "mix_strategy": options # 전체 옵션 점수
+            "location_desc": spec['desc'],
+            "target_x": spec['target'][0],
+            "target_z": spec['target'][1],
+            "strategy_name": strategy_name,
+            "reasoning": reason
         }

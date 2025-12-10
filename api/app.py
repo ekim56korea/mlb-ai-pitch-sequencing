@@ -1,108 +1,176 @@
-from fastapi import FastAPI, HTTPException
-from api.engine.physics import PhysicsEngine
-from api.schemas import PitchInput, TrajectoryResponse, BatterInput, BatterAnalysisResponse
+from fastapi import FastAPI, HTTPException, Query
+from typing import List
+from collections import deque
 import pandas as pd
 import joblib
 import os
 import numpy as np
+
+# --- [V3.0] 엔진 및 스키마 임포트 ---
+from api.engine.physics_v3 import HyperPhysicsEngine
+from api.engine.metrics import MetricsEngine
 from api.engine.strategy import StrategyEngine
+from api.engine.data_loader import PlayerDataLoader
+from api.schemas import PitchInput, TrajectoryResponse, MetricResponse, BatterInput, BatterAnalysisResponse, GameContext
 
-# 1. 앱(서버) 초기화
-app = FastAPI(title="Pitch Commander Pro API", version="1.0")
+# 앱 초기화
+app = FastAPI(title="Pitch Commander Pro V4.0", version="4.0 (Tactical)")
+
+# --- 엔진 초기화 ---
+physics_engine = HyperPhysicsEngine()
+metrics_engine = MetricsEngine()
 strategy_engine = StrategyEngine()
+data_loader = PlayerDataLoader()
 
-# 2. 엔진 및 모델 로드 (서버 켜질 때 한 번만 로딩)
-physics_engine = PhysicsEngine()
+# 전역 변수
+live_pitch_buffer = deque(maxlen=10)
+current_context = {"pitcher_df": None, "batter_df": None}
 
-# 저장된 AI 모델 불러오기
+# AI 모델 로드
 MODEL_PATH = os.path.join("api", "engine", "batter_cluster_model.pkl")
-if os.path.exists(MODEL_PATH):
-    loaded_data = joblib.load(MODEL_PATH)
-    cluster_model = loaded_data['model']
-    scaler = loaded_data['scaler']
-    print("✅ AI 모델 로드 완료")
-else:
-    print("⚠️ AI 모델 파일이 없습니다. (학습 스크립트를 먼저 실행하세요)")
-    cluster_model = None
+cluster_model = None
+scaler = None
 
-# --- API 엔드포인트 (기능 정의) ---
+if os.path.exists(MODEL_PATH):
+    try:
+        loaded_data = joblib.load(MODEL_PATH)
+        cluster_model = loaded_data['model']
+        scaler = loaded_data['scaler']
+        print("✅ AI 모델 로드 완료 (Batter Clustering)")
+    except Exception as e:
+        print(f"⚠️ 모델 로드 중 오류 발생: {e}")
+else:
+    print("⚠️ AI 모델 파일이 없습니다.")
+
+# --- API 엔드포인트 ---
 
 @app.get("/")
 def health_check():
-    """서버 상태 확인용"""
-    return {"status": "active", "system": "Pitch Commander Pro"}
+    return {"status": "active", "version": "v4.0"}
 
+# [1] 궤적 시뮬레이션
 @app.post("/simulate/trajectory", response_model=TrajectoryResponse)
 def simulate_pitch(pitch: PitchInput):
-    """
-    [물리 엔진] 투구 정보를 받아 궤적을 계산합니다.
-    """
-    # Pydantic 모델을 Pandas Series나 딕셔너리로 변환
-    # (간단한 시뮬레이션을 위해 9-param 중 일부만 가상으로 생성하거나 입력받음)
-    # 여기서는 입력받은 값 외에 물리 엔진에 필요한 값들을 기본값으로 채웁니다.
-    
-    # 가상의 물리 파라미터 생성 (실제로는 더 정교한 변환 필요)
-    mock_data = {
-        'vx0': 0, # 정면 승부 가정
-        'vy0': -pitch.release_speed * 1.467, # mph -> ft/s 변환
-        'vz0': -5.0,
-        'ax': 0,
-        'ay': 15.0, # 공기 저항
-        'az': -32.174,
-        'release_pos_x': 0,
-        'release_pos_z': 6.0
-    }
-    
-    row = pd.Series(mock_data)
-    traj = physics_engine.calculate_trajectory(row)
-    
-    if len(traj) == 0:
-        raise HTTPException(status_code=400, detail="궤적 계산 실패")
+    try:
+        pitch_data = pitch.dict()
+        traj, vaa, haa = physics_engine.calculate_trajectory(pitch_data, pitch.env)
+        
+        if len(traj) == 0:
+            raise HTTPException(status_code=400, detail="궤적 계산 실패")
 
-    return {
-        "x": traj[:, 0].tolist(),
-        "y": traj[:, 1].tolist(),
-        "z": traj[:, 2].tolist(),
-        "final_x": traj[-1][0],
-        "final_z": traj[-1][2]
-    }
+        return {
+            "x": traj[:, 0].tolist(),
+            "y": traj[:, 1].tolist(),
+            "z": traj[:, 2].tolist(),
+            "final_x": traj[-1][0],
+            "final_z": traj[-1][2],
+            "approach_angle_v": vaa,
+            "approach_angle_h": haa
+        }
+    except Exception as e:
+        print(f"Simulation Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+# [2] 구위 평가
+@app.post("/analyze/metrics", response_model=MetricResponse)
+def analyze_metrics(pitch: PitchInput):
+    try:
+        score = metrics_engine.calculate_stuff_plus(pitch.dict())
+        return {
+            "stuff_plus": score,
+            "location_plus": 0.0,
+            "xRV": -0.05
+        }
+    except Exception as e:
+        print(f"Metrics Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# [3] 타자 분석
 @app.post("/analyze/batter", response_model=BatterAnalysisResponse)
 def analyze_batter(batter: BatterInput):
-    """
-    [AI 엔진] 타자 스탯을 입력받아 성향(Cluster)을 분석합니다.
-    """
     if cluster_model is None:
-        raise HTTPException(status_code=500, detail="모델이 로드되지 않았습니다.")
-
-    # 1. 입력 데이터 전처리 (스케일링)
+        raise HTTPException(status_code=500, detail="AI 모델 로드 실패")
+    
     features = np.array([[batter.swing_rate, batter.whiff_rate, batter.chase_rate]])
     scaled_features = scaler.transform(features)
-    
-    # 2. 예측
     cluster_id = int(cluster_model.predict(scaled_features)[0])
     
-    # 3. 결과 해석 (룰 기반 매핑)
     types = {
-        0: ("공격적 컨택터", "존 안쪽 승부"),
-        1: ("신중형/수동적", "카운트 잡기 쉬움"),
-        2: ("선구안 마스터 (까다로움)", "유인구 자제, 구위로 압박"),
-        3: ("공풍기 (헛스윙 머신)", "변화구 적극 활용"),
-        4: ("배드볼 히터 (프리 스윙어)", "스트라이크 같은 볼 던지기")
+        0: ("공격적 컨택터", "존 안쪽 승부 유효"),
+        1: ("신중형/수동적", "카운트 선점 필수"),
+        2: ("선구안 마스터", "유인구 자제, 구위 승부"),
+        3: ("공풍기", "하이 패스트볼 또는 떨어지는 변화구"),
+        4: ("배드볼 히터", "존 바깥 유인구 적극 활용")
     }
+    b_type, strat = types.get(cluster_id, ("알 수 없음", "데이터 부족"))
+    return {"cluster_id": cluster_id, "batter_type": b_type, "strategy": strat}
+
+# [4] 전략 추천 (수정된 부분: Query 파라미터 명시)
+@app.post("/recommend/context")
+def recommend_context(
+    context: GameContext, 
+    arsenal: List[str] = Query(None)  # [수정] 명시적 쿼리 파라미터 선언
+):
+    """
+    [Strategy V4] 경기 상황을 입력받아 최적의 투구를 추천
+    """
+    if not arsenal:
+        arsenal = ["FF", "SL", "CH", "CB"]
+        
+    recommendation = strategy_engine.recommend_pitch(arsenal, context.dict())
+    return recommendation
+
+# [5] 데이터 로더 (선수 실데이터)
+@app.post("/load/matchup")
+def load_matchup_data(pitcher_name: str, batter_name: str, start_dt: str = None, end_dt: str = None):
+    try:
+        p_last, p_first = pitcher_name.split()
+        b_last, b_first = batter_name.split()
+    except:
+        raise HTTPException(status_code=400, detail="이름 포맷 오류 (성 이름)")
+
+    # 1. 투수 로드
+    p_id = data_loader.find_player_id(p_last, p_first)
+    if not p_id:
+        return {"status": "error", "message": f"투수 {pitcher_name} 못 찾음"}
     
-    batter_type, strategy = types.get(cluster_id, ("알 수 없음", "데이터 부족"))
+    p_df = data_loader.load_pitcher_data(p_id, start_dt, end_dt)
+    current_context["pitcher_df"] = p_df
+
+    # 2. 타자 로드
+    b_id = data_loader.find_player_id(b_last, b_first)
+    if not b_id:
+        return {"status": "error", "message": f"타자 {batter_name} 못 찾음"}
+        
+    b_df = data_loader.load_batter_data(b_id, start_dt, end_dt)
+    current_context["batter_df"] = b_df
+
+    # 3. 구종 통계
+    arsenal = {}
+    if not p_df.empty and 'pitch_type' in p_df.columns:
+        summary = p_df.groupby('pitch_type').agg({
+            'release_speed': 'mean',
+            'release_spin_rate': 'mean',
+            'pfx_x': 'mean',
+            'pfx_z': 'mean',
+            'release_extension': 'mean'
+        }).to_dict('index')
+        arsenal = summary
 
     return {
-        "cluster_id": cluster_id,
-        "batter_type": batter_type,
-        "strategy": strategy
+        "status": "success",
+        "pitcher": {"name": pitcher_name, "id": int(p_id), "data_count": len(p_df), "arsenal": arsenal},
+        "batter": {"name": batter_name, "id": int(b_id), "data_count": len(b_df)}
     }
 
-@app.post("/recommend/strategy")
-def get_pitch_recommendation(cluster_id: int, ball_count: str):
-    """
-    [전략 엔진] 타자 클러스터와 볼카운트를 기반으로 다음 공을 추천합니다.
-    """
-    recommendation = strategy_engine.recommend_pitch(cluster_id, ball_count)
-    return recommendation
+# [6] 라이브 데이터 (기존)
+@app.post("/live/ingest")
+def ingest_live_data(pitch: PitchInput):
+    live_pitch_buffer.append(pitch)
+    return {"status": "received"}
+
+@app.get("/live/latest")
+def get_latest_pitch():
+    if not live_pitch_buffer:
+        return {"status": "empty"}
+    return live_pitch_buffer[-1]

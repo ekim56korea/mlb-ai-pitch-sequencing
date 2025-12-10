@@ -22,6 +22,10 @@ class BatterClustering:
         # 데이터 복사본 생성 (원본 보호)
         data = df.copy()
 
+        # [🚨 긴급 수정] 구종 정보가 없는(NaN) 쓰레기 데이터 제거
+        # 이를 처리하지 않으면 스윙률이 1.0을 넘는 버그가 발생함
+        data = data.dropna(subset=['pitch_type'])
+
         # 1. 스윙 여부 정의
         swing_events = [
             'hit_into_play', 'foul', 'swinging_strike', 

@@ -1,20 +1,12 @@
-# 가상 환경
-venv/
-env/
-.env
-
-# 파이썬 컴파일 파일
+# Python & OS
 __pycache__/
 *.pyc
-
-# 데이터 파일 (대용량 제외)
-data/*.parquet
-data/*.csv
-*.pkl
-
-# 시스템 파일
 .DS_Store
-Thumbs.db
+.env
+venv/
 
-# VS Code 설정
-.vscode/
+# Data (절대 업로드 금지)
+data/
+*.db
+*.parquet
+*.pkl

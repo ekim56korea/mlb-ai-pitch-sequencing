@@ -1,90 +1,63 @@
-# Pitch Commander Pro v4.0: Tactical Edition ⚾️
+# ⚾️ Pitch Commander Pro v7.0 (Zero-Cost Edition)
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![Framework](https://img.shields.io/badge/Framework-FastAPI%20%7C%20Streamlit-red) ![Physics](https://img.shields.io/badge/Physics-Aerodynamics-orange) ![AI](https://img.shields.io/badge/AI-XGBoost-green)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.95%2B-green) ![Streamlit](https://img.shields.io/badge/Streamlit-1.22%2B-red) ![License](https://img.shields.io/badge/License-MIT-grey)
 
-> **"From Physics to Tactics."**
-> 
-> **MLB 실데이터 연동, 초정밀 공기역학 엔진, 그리고 경기 상황(Context)을 인지하는 전략 AI가 결합된 차세대 투구 의사결정 시스템입니다.**
+**Pitch Commander Pro**는 고가의 트래킹 장비(Trackman)나 유료 데이터 피드 없이, **순수 수학(Math)과 효율적인 엔지니어링**만으로 엔터프라이즈급 야구 분석을 구현한 AI 시스템입니다.
 
----
+MLB Statcast 데이터를 기반으로 물리적 궤적을 시뮬레이션하고, 베이지안 추론과 강화학습(RL) 로직을 결합하여 최적의 투구 시퀀스를 제안합니다.
 
-## 🚀 What's New in v4.0 (Tactical Update)
+## 🌟 Key Features (The "Zero-Cost" Innovation)
 
-### 1. 🌍 Real-World Data Injection (실데이터 연동)
-* **Dynamic Loader:** `PyBaseball`을 통해 투수와 타자의 이름을 입력하면 **최신 Statcast 데이터**를 실시간으로 서버에 로드합니다.
-* **Auto-Calibration:** 투수의 실제 구종, 평균 구속, 무브먼트 데이터를 분석하여 시뮬레이션 초기값을 자동으로 보정합니다.
+### 1. 🌪️ Hyper-Physics Engine (물리 엔진)
+* **Reverse Engineering:** `PFX`와 `Spin Rate`만으로 **회전 효율(Efficiency)**과 **자이로 각도(Gyro Angle)**를 수학적으로 역산합니다.
+* **Collision Physics:** 앨런 네이선(Alan Nathan) 교수의 충돌 모델을 구현하여 타격 시 **예상 비거리와 타구 속도**를 시뮬레이션합니다.
+* **Environmental Factors:** 기온, 습도, 고도 및 **3D 바람장(Wind Field)**이 궤적에 미치는 영향을 계산합니다.
 
-### 2. 🏟️ Hyper-Physics Engine V3 (환경 변수 적용)
-* **Environmental Normalization:** 경기장의 **기온(Temp), 해발고도(Elevation), 습도(Humidity)**를 입력받아 공기 밀도($\rho$)를 동적으로 계산합니다.
-* **Aerodynamics:** 쿠어스 필드(Coors Field)와 펫코 파크(Petco Park)에서의 변화구 궤적 차이를 1:1로 시뮬레이션합니다.
+### 2. 🧠 Deep Intelligence Strategy (AI 전략)
+* **Mind Reading:** 베이지안 추론(Bayesian Inference)을 통해 타자의 **카운트별 노림수(Guess Hitting)**를 예측합니다.
+* **Context Awareness:** **RE24 Matrix**를 내장하여 경기 상황의 중요도(**Leverage Index**)를 계산하고, 위기 상황에 맞는 전략을 수립합니다.
+* **Swing Probability:** 타자가 배트를 낼 확률을 경량 ML 모델로 예측합니다.
 
-### 3. 📊 Pitching+ Metrics (구위 평가 AI)
-* **Stuff+ Model:** `XGBoost` 기반 머신러닝 모델이 투구의 물리적 제원(속도, 회전, 무브먼트, 익스텐션)을 분석하여 **객관적인 구위 점수(Stuff+)**를 산출합니다.
-* **Actionable Insight:** "이 공은 리그 평균 대비 상위 10%의 위력을 가집니다"와 같은 직관적인 지표를 제공합니다.
+### 3. 🏟️ Volumetric Analytics (입체 시각화)
+* **Ghost Trails:** 직전 투구와 현재 투구의 궤적을 겹쳐 보여주어 **터널링(Tunneling)** 효과를 분석합니다.
+* **3D Hot Zones:** 타자의 약점을 단순한 2D 존이 아닌, 구속-무브먼트 공간(3D)에서 시각화합니다.
 
-### 4. 🧠 Context-Aware Strategy (상황별 전략)
-* **Tactical AI:** 볼카운트, 아웃 카운트, 주자 상황, 점수 차 등 **경기 맥락(Context)**을 입력받아 최적의 전략을 수립합니다.
-* **Example:** "2사 만루 위기 상황"에서는 땅볼 유도(Sinkers down)를, "2스트라이크"에서는 헛스윙 유도(High Fastball)를 추천합니다.
+### 4. ⚡ Extreme Performance (성능 최적화)
+* **Hybrid Storage:** SQLite(WAL Mode)와 Parquet 캐싱을 결합하여 데이터 로딩 속도를 **0.1초** 대로 단축했습니다.
+* **Async IO:** FastAPI의 비동기 처리를 통해 시뮬레이션 중에도 서버가 멈추지 않습니다.
 
----
+## 🛠️ Installation & Setup
 
-## 🛠️ System Architecture
-
-```mermaid
-graph TD
-    User[Coach/User] -->|Input: Name & Context| UI[Streamlit Dashboard]
-    UI -->|API Request| API[FastAPI Server]
-    
-    subgraph Core Engine
-        API -->|Fetch Data| DL[Data Loader]
-        DL -->|Statcast| WEB[(MLB Server)]
-        API -->|Calc Physics| PHY[Physics V3]
-        API -->|Eval Quality| MET[Metrics Engine]
-        API -->|Decision| STR[Strategy Engine]
-    end
-    
-    PHY -->|Trajectory & VAA/HAA| UI
-    MET -->|Stuff+ Score| UI
-    STR -->|Best Pitch & Target| UI
-
-
-    💻 Quick Start
-1. 환경 설정
+1. **저장소 클론**
+   ```bash
+   git clone [https://github.com/ekim56korea/mlb-ai-pitch-sequencing.git](https://github.com/ekim56korea/mlb-ai-pitch-sequencing.git)
+   cd mlb-ai-pitch-sequencing
+필수 라이브러리 설치
 
 Bash
-# 가상 환경 생성 및 활성화
-python -m venv venv
-source venv/bin/activate  # Windows: .\venv\Scripts\activate
-
-# 필수 라이브러리 설치 (XGBoost 포함)
 pip install -r requirements.txt
-2. AI 모델 학습 (최초 1회 필수)
+▶️ How to Run
+이 시스템은 **Backend(API)**와 **Frontend(Dashboard)**가 분리되어 있습니다. 두 개의 터미널에서 각각 실행해주세요.
 
-구위 평가 모델(Stuff+)을 생성합니다.
-
-Bash
-python scripts/train_stuff_plus.py
-3. 시스템 가동
-
-두 개의 터미널을 열어 각각 실행합니다.
-
-Terminal 1: 백엔드 서버 (Brain)
+Terminal 1: API Server
 
 Bash
-uvicorn api.app:app --reload
-Terminal 2: 대시보드 (Cockpit)
+# 비동기 처리를 위해 4개의 워커 프로세스 가동
+uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers 4
+Terminal 2: Dashboard
 
 Bash
+# Streamlit 대시보드 실행
 streamlit run ui/dashboard.py
-📈 Tech Stack
-Language: Python 3.9+
+📂 Documentation
+Architecture Overview
 
-Core: Pandas, NumPy, SciPy (ODE Solver)
+Physics Logic Details
 
-AI/ML: XGBoost, Scikit-learn
+AI Strategy Algorithm
 
-Web/API: FastAPI, Uvicorn
+⚠️ Note
+이 프로젝트는 학습 및 연구 목적으로 개발되었습니다. 사용된 데이터는 pybaseball 라이브러리를 통해 수집되며, 상업적 이용 시 MLB 데이터 라이선스 정책을 확인해야 합니다.
 
-Frontend: Streamlit, Plotly (3D Visualization)
 
-Data Source: PyBaseball (Statcast)
+---

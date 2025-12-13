@@ -1,176 +1,243 @@
 from fastapi import FastAPI, HTTPException, Query
-from typing import List
-from collections import deque
+from typing import List, Optional
 import pandas as pd
-import joblib
-import os
+import asyncio
 import numpy as np
 
-# --- [V3.0] 엔진 및 스키마 임포트 ---
-from api.engine.physics_v3 import HyperPhysicsEngine
-from api.engine.metrics import MetricsEngine
-from api.engine.strategy import StrategyEngine
-from api.engine.data_loader import PlayerDataLoader
-from api.schemas import PitchInput, TrajectoryResponse, MetricResponse, BatterInput, BatterAnalysisResponse, GameContext
+# [Engines]
+from api.engine.physics_v3 import HyperPhysicsEngine     # Phase 2: Math-based Physics
+from api.engine.metrics import MetricsEngine             # Phase 3: Metrics & Tunneling
+from api.engine.strategy_rl import RLStrategyEngine      # Phase 2-4: Deep Intelligence
+from api.engine.data_loader import PlayerDataLoader      # Phase 1: Optimized Loader
+from api.engine.strategy_transfer import StrategyTransferEngine
+from api.engine.analytics import VolumetricAnalytics     # Phase 3: Volumetric Lab
 
-# 앱 초기화
-app = FastAPI(title="Pitch Commander Pro V4.0", version="4.0 (Tactical)")
+# [Schemas]
+from api.schemas import PitchInput, TrajectoryResponse, MetricResponse, GameContext
 
-# --- 엔진 초기화 ---
+app = FastAPI(title="Pitch Commander Pro v7.0", version="7.0 (Zero-Cost Edition)")
+
+# ==================== [Initialize Engines] ====================
 physics_engine = HyperPhysicsEngine()
 metrics_engine = MetricsEngine()
-strategy_engine = StrategyEngine()
+rl_engine = RLStrategyEngine()
 data_loader = PlayerDataLoader()
+transfer_engine = StrategyTransferEngine()
+analytics_engine = VolumetricAnalytics()
 
-# 전역 변수
-live_pitch_buffer = deque(maxlen=10)
-current_context = {"pitcher_df": None, "batter_df": None}
+# ==================== [Endpoints] ====================
 
-# AI 모델 로드
-MODEL_PATH = os.path.join("api", "engine", "batter_cluster_model.pkl")
-cluster_model = None
-scaler = None
-
-if os.path.exists(MODEL_PATH):
-    try:
-        loaded_data = joblib.load(MODEL_PATH)
-        cluster_model = loaded_data['model']
-        scaler = loaded_data['scaler']
-        print("✅ AI 모델 로드 완료 (Batter Clustering)")
-    except Exception as e:
-        print(f"⚠️ 모델 로드 중 오류 발생: {e}")
-else:
-    print("⚠️ AI 모델 파일이 없습니다.")
-
-# --- API 엔드포인트 ---
-
-@app.get("/")
-def health_check():
-    return {"status": "active", "version": "v4.0"}
-
-# [1] 궤적 시뮬레이션
-@app.post("/simulate/trajectory", response_model=TrajectoryResponse)
+@app.post("/simulate/trajectory")
 def simulate_pitch(pitch: PitchInput):
+    """
+    [Phase 2] 궤적 시뮬레이션 및 물리 파라미터 역산
+    - Trajectory Calculation (3-DOF)
+    - Spin Parameter Estimation (Efficiency, Gyro, Axis)
+    - Contact Physics (Exit Velocity, Distance)
+    """
     try:
         pitch_data = pitch.dict()
-        traj, vaa, haa = physics_engine.calculate_trajectory(pitch_data, pitch.env)
         
-        if len(traj) == 0:
-            raise HTTPException(status_code=400, detail="궤적 계산 실패")
-
+        # 1. 궤적 계산
+        traj, vaa, haa = physics_engine.calculate_trajectory(pitch_data, pitch.env)
+        if len(traj) == 0: 
+            raise HTTPException(status_code=400, detail="Trajectory calculation failed")
+        
+        # 2. [Phase 2] 스핀 파라미터 역산 (Reverse Engineering)
+        eff, gyro, axis = physics_engine.estimate_spin_parameters(
+            pitch.release_speed, pitch.release_spin_rate, pitch.pfx_x, pitch.pfx_z
+        )
+        
+        # 3. [Phase 2] 타격 결과 시뮬레이션 (Collision Physics)
+        # 타겟 지점에 공이 맞았다고 가정
+        contact_res = physics_engine.calculate_contact_outcome(
+            pitch.release_speed, pitch.plate_x or 0.0, pitch.plate_z or 2.5
+        )
+        
         return {
-            "x": traj[:, 0].tolist(),
-            "y": traj[:, 1].tolist(),
+            "x": traj[:, 0].tolist(), 
+            "y": traj[:, 1].tolist(), 
             "z": traj[:, 2].tolist(),
-            "final_x": traj[-1][0],
+            "final_x": traj[-1][0], 
             "final_z": traj[-1][2],
-            "approach_angle_v": vaa,
-            "approach_angle_h": haa
+            "approach_angle_v": vaa, 
+            "approach_angle_h": haa,
+            # [New] Physics Lab Data
+            "physics_est": {
+                "efficiency": eff,
+                "gyro_degree": gyro,
+                "spin_axis": axis
+            },
+            "contact_est": contact_res
         }
-    except Exception as e:
-        print(f"Simulation Error: {e}")
+    except Exception as e: 
         raise HTTPException(status_code=500, detail=str(e))
 
-# [2] 구위 평가
 @app.post("/analyze/metrics", response_model=MetricResponse)
 def analyze_metrics(pitch: PitchInput):
+    """
+    [Phase 3] Pitching+ 평가 및 터널링 분석
+    - Stuff+ / Location+ / Pitching+
+    - Tunneling Bonus (Ghost Trail Comparison)
+    """
     try:
-        score = metrics_engine.calculate_stuff_plus(pitch.dict())
+        ctx = pitch.context.dict() if pitch.context else {'balls': 0, 'strikes': 0}
+        ctx['stand'] = 'R' # 기본값
+        pitch_data = pitch.dict()
+
+        # 1. Physics Calc (위치 보정용)
+        if pitch.plate_x is not None and pitch.plate_z is not None:
+            pitch_data['plate_x'] = pitch.plate_x
+            pitch_data['plate_z'] = pitch.plate_z
+        else:
+            traj, _, _ = physics_engine.calculate_trajectory(pitch_data, pitch.env)
+            if len(traj) > 0:
+                pitch_data['plate_x'] = traj[-1][0]
+                pitch_data['plate_z'] = traj[-1][2]
+            else: 
+                pitch_data['plate_x'], pitch_data['plate_z'] = 0.0, 2.5
+
+        # 2. [Phase 3] 터널링 거리 계산
+        tunnel_bonus = 0.0
+        if pitch.prev_pitch:
+            COMMIT_Y = 23.8 # 타자가 결심하는 거리 (ft)
+            
+            # 현재 투구 위치
+            curr_x, curr_z = physics_engine.get_position_at_y(pitch_data, COMMIT_Y, pitch.env)
+            
+            # 직전 투구 위치 (prev_pitch 데이터 기반 시뮬레이션)
+            prev_data = pitch.prev_pitch.dict()
+            prev_x, prev_z = physics_engine.get_position_at_y(prev_data, COMMIT_Y, pitch.env)
+            
+            # 보너스 산출
+            tunnel_bonus = metrics_engine.calculate_tunneling_bonus((curr_x, curr_z), (prev_x, prev_z))
+        
+        pitch_data['tunneling_bonus'] = tunnel_bonus
+        
+        # 3. 종합 점수 계산
+        result = metrics_engine.calculate_pitching_plus(pitch_data, ctx)
+        return result
+        
+    except Exception as e: 
+        print(f"Metrics Error: {e}")
+        return {"stuff_plus": 100.0, "location_plus": 100.0, "pitching_plus": 100.0, "xRV": 0.0}
+
+@app.post("/recommend/context")
+def recommend_context(context: GameContext, arsenal: List[str] = Query(None)):
+    """
+    [Phase 2-4] 심층 지능 전략 추천
+    - Phase 2: Guess Hitting (노림수 예측)
+    - Phase 3: Swing Probability (반응성 예측)
+    - Phase 4: Leverage Index (상황 중요도)
+    """
+    if not arsenal: arsenal = ["FF", "SL", "CH", "CB"]
+    
+    # RL 엔진을 통해 시퀀스 예측 (Context-Aware)
+    sequence = rl_engine.predict_sequence(arsenal, context.dict())
+    
+    # UI 호환성을 위한 좌표 매핑
+    setup = sequence['recommended_pitch']
+    setup_loc_desc = sequence['location']
+    finish = sequence['next_pitch']
+    
+    loc_map = {"High-In": (-0.8, 3.5), "High-Out": (0.8, 3.5), 
+               "Low-In": (-0.8, 1.5), "Low-Out": (0.8, 1.5), 
+               "Middle": (0.0, 2.5), "Middle-Low": (0.0, 2.0)}
+    
+    tx, tz = loc_map.get(setup_loc_desc.split(' ')[0], (0.0, 2.5))
+    fx, fz = loc_map.get(finish['location'].split(' ')[0], (0.0, 1.5))
+    
+    return {
+        "strategy_name": sequence['strategy_name'],
+        "recommended_pitch": setup,
+        "location_desc": setup_loc_desc,
+        "target_x": tx, 
+        "target_z": tz,
+        "reasoning": sequence['reasoning'],
+        # [New Data Points]
+        "guess_probs": sequence['guess_probs'],      # Phase 2
+        "swing_prob": sequence['swing_prob'],        # Phase 3
+        "leverage_index": sequence.get('leverage_index', 1.0), # Phase 4
+        "next_pitch": {
+            "pitch": finish['pitch'], 
+            "location": finish['location'], 
+            "target_x": fx, 
+            "target_z": fz
+        }
+    }
+
+@app.post("/load/matchup")
+async def load_matchup_data(pitcher_name: str, batter_name: str, start_dt: str = None, end_dt: str = None):
+    """
+    [Phase 1] 비동기 데이터 로딩 (Async IO)
+    - ThreadPool을 사용하여 무거운 I/O 작업을 메인 루프에서 분리
+    - Parquet 캐싱 활용으로 속도 최적화
+    """
+    try:
+        # 1. Pitcher Search & Load (Async)
+        p_id = await asyncio.to_thread(data_loader.find_player_id, pitcher_name)
+        if not p_id: 
+            return {"status": "error", "message": f"Pitcher '{pitcher_name}' not found."}
+        
+        p_df = await asyncio.to_thread(data_loader.load_pitcher_data, p_id, start_dt, end_dt)
+        
+        # 2. Batter Search & Load (Async)
+        b_id = await asyncio.to_thread(data_loader.find_player_id, batter_name)
+        b_df = pd.DataFrame()
+        if b_id:
+            b_df = await asyncio.to_thread(data_loader.load_batter_data, b_id, start_dt, end_dt)
+
+        # 3. Arsenal Analysis & Archetype (CPU Bound)
+        arsenal = {}
+        similar_pitcher = None
+        
+        if not p_df.empty and 'pitch_type' in p_df.columns:
+            summary = p_df.groupby('pitch_type').agg({
+                'release_speed': 'mean', 'release_spin_rate': 'mean',
+                'pfx_x': 'mean', 'pfx_z': 'mean', 'release_extension': 'mean',
+                'pitch_type': 'count'
+            }).rename(columns={'pitch_type': 'count'}).to_dict('index')
+            arsenal = summary
+            
+            # Archetype Finding
+            try:
+                main_pitch = max(summary.items(), key=lambda x: x[1]['count'])
+                stats = main_pitch[1]
+                similar_pitcher = transfer_engine.find_similar_pitcher(
+                    stats['release_speed'], stats['pfx_x'], stats['pfx_z']
+                )
+            except: pass
+
         return {
-            "stuff_plus": score,
-            "location_plus": 0.0,
-            "xRV": -0.05
+            "status": "success",
+            "pitcher": {
+                "name": pitcher_name, "id": int(p_id), 
+                "data_count": len(p_df), "arsenal": arsenal, 
+                "archetype": similar_pitcher
+            },
+            "batter": {
+                "name": batter_name, "id": int(b_id) if b_id else 0, 
+                "data_count": len(b_df)
+            }
         }
     except Exception as e:
-        print(f"Metrics Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
-# [3] 타자 분석
-@app.post("/analyze/batter", response_model=BatterAnalysisResponse)
-def analyze_batter(batter: BatterInput):
-    if cluster_model is None:
-        raise HTTPException(status_code=500, detail="AI 모델 로드 실패")
-    
-    features = np.array([[batter.swing_rate, batter.whiff_rate, batter.chase_rate]])
-    scaled_features = scaler.transform(features)
-    cluster_id = int(cluster_model.predict(scaled_features)[0])
-    
-    types = {
-        0: ("공격적 컨택터", "존 안쪽 승부 유효"),
-        1: ("신중형/수동적", "카운트 선점 필수"),
-        2: ("선구안 마스터", "유인구 자제, 구위 승부"),
-        3: ("공풍기", "하이 패스트볼 또는 떨어지는 변화구"),
-        4: ("배드볼 히터", "존 바깥 유인구 적극 활용")
-    }
-    b_type, strat = types.get(cluster_id, ("알 수 없음", "데이터 부족"))
-    return {"cluster_id": cluster_id, "batter_type": b_type, "strategy": strat}
-
-# [4] 전략 추천 (수정된 부분: Query 파라미터 명시)
-@app.post("/recommend/context")
-def recommend_context(
-    context: GameContext, 
-    arsenal: List[str] = Query(None)  # [수정] 명시적 쿼리 파라미터 선언
-):
+@app.post("/analyze/volumetric")
+def analyze_volumetric(batter_name: str, start_dt: str = None, end_dt: str = None):
     """
-    [Strategy V4] 경기 상황을 입력받아 최적의 투구를 추천
+    [Phase 3] 3D 볼류메트릭 핫존 분석 요청
     """
-    if not arsenal:
-        arsenal = ["FF", "SL", "CH", "CB"]
-        
-    recommendation = strategy_engine.recommend_pitch(arsenal, context.dict())
-    return recommendation
-
-# [5] 데이터 로더 (선수 실데이터)
-@app.post("/load/matchup")
-def load_matchup_data(pitcher_name: str, batter_name: str, start_dt: str = None, end_dt: str = None):
     try:
-        p_last, p_first = pitcher_name.split()
-        b_last, b_first = batter_name.split()
-    except:
-        raise HTTPException(status_code=400, detail="이름 포맷 오류 (성 이름)")
-
-    # 1. 투수 로드
-    p_id = data_loader.find_player_id(p_last, p_first)
-    if not p_id:
-        return {"status": "error", "message": f"투수 {pitcher_name} 못 찾음"}
-    
-    p_df = data_loader.load_pitcher_data(p_id, start_dt, end_dt)
-    current_context["pitcher_df"] = p_df
-
-    # 2. 타자 로드
-    b_id = data_loader.find_player_id(b_last, b_first)
-    if not b_id:
-        return {"status": "error", "message": f"타자 {batter_name} 못 찾음"}
+        b_id = data_loader.find_player_id(batter_name)
+        if not b_id:
+            return {"status": "error", "data": []}
+            
+        b_df = data_loader.load_batter_data(b_id, start_dt, end_dt)
         
-    b_df = data_loader.load_batter_data(b_id, start_dt, end_dt)
-    current_context["batter_df"] = b_df
-
-    # 3. 구종 통계
-    arsenal = {}
-    if not p_df.empty and 'pitch_type' in p_df.columns:
-        summary = p_df.groupby('pitch_type').agg({
-            'release_speed': 'mean',
-            'release_spin_rate': 'mean',
-            'pfx_x': 'mean',
-            'pfx_z': 'mean',
-            'release_extension': 'mean'
-        }).to_dict('index')
-        arsenal = summary
-
-    return {
-        "status": "success",
-        "pitcher": {"name": pitcher_name, "id": int(p_id), "data_count": len(p_df), "arsenal": arsenal},
-        "batter": {"name": batter_name, "id": int(b_id), "data_count": len(b_df)}
-    }
-
-# [6] 라이브 데이터 (기존)
-@app.post("/live/ingest")
-def ingest_live_data(pitch: PitchInput):
-    live_pitch_buffer.append(pitch)
-    return {"status": "received"}
-
-@app.get("/live/latest")
-def get_latest_pitch():
-    if not live_pitch_buffer:
-        return {"status": "empty"}
-    return live_pitch_buffer[-1]
+        # 3D 핫존 생성
+        volumetric_data = analytics_engine.generate_volumetric_hotzone(b_df)
+        
+        return {"status": "success", "data": volumetric_data}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "data": []}

@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pkl  # 모델 파일은 용량이 크면 제외하기도 하지만, 이번엔 포함해도 됨 (너무 크면 제외)
+.DS_Store
+
+# Node.js / Next.js
+node_modules/
+.next/
+out/
+build/
+.env
+.env.local
+
+# Data (데이터가 너무 크면 제외해야 함, 100MB 이상 시)
+savant_data.csv

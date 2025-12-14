@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+streamlit
+pandas
+numpy
+scipy
+plotly
+scikit-learn
+pybaseball
+fastparquet
+pyarrow
+joblib
+click

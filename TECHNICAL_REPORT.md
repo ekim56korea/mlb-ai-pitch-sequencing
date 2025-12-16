@@ -1,6 +1,6 @@
 
 
-````markdown
+
 # 🏛️ Technical Deep Dive & Algorithms
 
 **Project:** Pitch Commander Pro (v8.0)  

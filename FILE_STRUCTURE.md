@@ -1,6 +1,6 @@
 ### 3. 📂 FILE_STRUCTURE.md (파일 구조)
 
-```markdown
+
 # 📂 Project File Structure
 
 본 프로젝트는 **Backend (Python/Docker)**와 **Frontend (Next.js)**가 분리된 모노레포 구조입니다.

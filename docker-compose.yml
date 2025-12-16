@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # 🐍 백엔드 서비스
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mlb-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # 로컬 코드를 컨테이너와 동기화 (수정 시 바로 반영)
+      - ./backend/app:/code/app
+      - ./backend/scripts:/code/scripts
+      # 데이터 폴더 영구 저장 (컨테이너 꺼도 DB 유지)
+      - ./backend/data:/code/data
+    restart: always
+
+  # ⚛️ 프론트엔드 서비스
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: mlb-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    environment:
+      - WATCHPACK_POLLING=true
+    depends_on:
+      - backend
+    restart: always

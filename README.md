@@ -1,37 +1,57 @@
-# ⚾️ MLB AI Pitch Sequencing & Visualization Platform
+# ⚾️ Pitch Commander Pro (v8.0)
 
-> **Advanced Baseball Analytics System powered by 3D Physics & Machine Learning**
+> **Deep Learning Based MLB Pitch Sequencing & Analytics Platform**
+>
+> 10년 치 MLB 빅데이터와 딥러닝(LSTM)을 활용한 투구 예측 및 3D 시뮬레이션 시스템
 
-이 프로젝트는 MLB Statcast 데이터를 활용하여 투수의 투구 궤적을 물리적으로 시뮬레이션하고, 머신러닝(Random Forest)을 통해 최적의 볼 배합을 예측하며, 타격 결과를 시뮬레이션하는 **데이터 기반 야구 전력 분석 플랫폼**입니다.
+![Project Status](https://img.shields.io/badge/Status-Active-success)
+![Docker](https://img.shields.io/badge/Docker-Enabled-blue)
+![Tech Stack](https://img.shields.io/badge/Stack-FastAPI%20|%20Next.js%20|%20PyTorch%20|%20DuckDB-blueviolet)
 
-![Project Status](https://img.shields.io/badge/Project-Complete-brightgreen)
-![Tech Stack](https://img.shields.io/badge/Next.js-FastAPI-blueviolet)
+## 📖 Project Overview
+**Pitch Commander Pro**는 단순한 야구 기록실을 넘어선 **AI 기반 전력 분석 솔루션**입니다.
+MLB Statcast 데이터를 **DuckDB**에 적재하여 초고속으로 조회하며, **PyTorch LSTM** 모델을 통해 투수의 투구 패턴을 시계열로 분석하여 다음 공을 예측합니다. 또한, 물리 엔진을 통해 공의 궤적을 3D로 시각화하고 **구종 가치(Run Value)**를 계산하여 투수의 실질적인 위력을 평가합니다.
 
-## ✨ Core Features (핵심 기능)
+## ✨ Key Features (핵심 기능)
 
-1.  **Physics-Based 3D Visualization**: 마그누스 효과(Magnus Effect)와 중력을 반영한 리얼타임 투구 궤적 렌더링.
-2.  **Volumetric Heatmap**: 투구 위치 데이터(Point Cloud)를 복셀(Voxel) 격자로 변환하여 시각화한 3D 히트맵.
-3.  **AI Pitch Prediction**: 상황(볼카운트, 타자 유형 등)에 따른 투수의 다음 구종 예측 (Accuracy > 70%).
-4.  **Deep Analytics Dashboard**: 구속(Velocity) 및 무브먼트(Movement) 정밀 분석 차트.
-5.  **Outcome Simulator**: 특정 구종 선택 시 예상되는 헛스윙률(Whiff%), 강타 비율(Hard Hit%) 시뮬레이션.
+1.  **🧠 Deep Learning Prediction (LSTM)**
+    * 단순 확률 통계가 아닌, 투구의 시퀀스(이전 5개 공의 흐름)를 학습하여 다음 구종을 예측합니다.
+    * 상황(볼카운트, 타자 유형)에 따른 투수의 심리적 패턴을 반영합니다.
+
+2.  **📊 Advanced Analytics (Run Value)**
+    * MLB 선형 가중치(Linear Weights) 알고리즘을 적용하여 구종별 **Run Value(RV/100)**를 산출합니다.
+    * 투수가 해당 구종으로 실점을 얼마나 억제했는지 정량적으로 평가합니다.
+
+3.  **physics-Based 3D Engine**
+    * Statcast의 `pfx_x`, `pfx_z` 데이터를 역산하여 마그누스 효과와 중력이 적용된 3D 궤적을 렌더링합니다.
+    * Three.js 기반의 실시간 인터랙티브 시뮬레이션을 제공합니다.
+
+4.  **Big Data Infrastructure**
+    * **DuckDB**: 300만 건 이상의 대용량 투구 데이터를 로컬 웨어하우스에 구축하여 지연 없는 분석을 제공합니다.
+    * **Dockerized**: 백엔드와 프론트엔드가 컨테이너로 완벽하게 격리 및 관리됩니다.
 
 ## 🛠️ Tech Stack
 
--   **Frontend**: Next.js 14 (App Router), React, Three.js (R3F), Recharts, Tailwind CSS
--   **Backend**: Python FastAPI, Pandas, NumPy
--   **AI/ML**: Scikit-learn (Random Forest), Joblib
--   **Data**: MLB Statcast (Baseball Savant)
+| Category | Technologies |
+| :--- | :--- |
+| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, Three.js (R3F), Recharts |
+| **Backend** | Python FastAPI, Pandas, NumPy, PyBaseball |
+| **AI & Data** | **PyTorch (LSTM)**, Scikit-learn, **DuckDB**, Joblib |
+| **DevOps** | Docker, Docker Compose |
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Installation)
 
-### Backend (Python)
+이 프로젝트는 Docker Compose를 통해 한 번에 실행됩니다.
+
 ```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install fastapi uvicorn pandas scikit-learn joblib
+# 1. 저장소 클론
+git clone [https://github.com/your-username/pitch-commander-pro.git](https://github.com/your-username/pitch-commander-pro.git)
+cd pitch-commander-pro
 
-# AI 모델 학습 (최초 1회)
-python train_model.py
+# 2. 실행 (DB 구축 및 모델 로딩 자동 수행)
+docker-compose up --build
 
-# 서버 실행
-uvicorn api.app:app --reload
+
+Frontend: http://localhost:3000
+
+Backend API: http://localhost:8000/docs

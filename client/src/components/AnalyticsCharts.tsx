@@ -40,11 +40,15 @@ export default function AnalyticsCharts({ locations }: { locations: any[] }) {
 
   // 1. 무브먼트 데이터 처리 (투수 시점으로 좌우 반전)
   const movementData = useMemo(() => {
-    return locations.map(loc => ({
-      ...loc,
-      pfx_x: Number((loc.pfx_x * -1).toFixed(1)), 
-      pfx_z: Number(loc.pfx_z.toFixed(1))
-    }));
+    // 🛡️ [수정됨] 데이터 방어 로직 추가
+    // pfx_x나 pfx_z가 숫자가 아닌 경우(null, undefined) 미리 걸러냅니다.
+    return locations
+      .filter(loc => typeof loc.pfx_x === 'number' && typeof loc.pfx_z === 'number') 
+      .map(loc => ({
+        ...loc,
+        pfx_x: Number((loc.pfx_x * -1).toFixed(1)), 
+        pfx_z: Number(loc.pfx_z.toFixed(1))
+      }));
   }, [locations]);
 
   // 2. 구속 분포 데이터 처리 (히스토그램)

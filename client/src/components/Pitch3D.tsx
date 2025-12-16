@@ -48,9 +48,6 @@ function Heatmap3D({ locations, activePitches }: { locations: any[], activePitch
       return activePitches.includes(type);
     });
 
-    // 🔍 디버깅 로그 (콘솔에서 확인 가능)
-    console.log(`🔥 [Heatmap] 원본: ${locations.length}개 -> 필터링 후: ${filtered.length}개`);
-
     if (filtered.length === 0) return { map, maxCount: 0 };
 
     filtered.forEach((loc: any) => {

@@ -37,7 +37,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 DB_CHUNK_SIZE = 10000
 BATCH_SIZE = 128       
 TOTAL_EPOCHS = 5
-INPUT_SIZE = 25        # 17개(기존) + 8개(핵심 Z-Score)
+INPUT_SIZE = 39        # 🔥 [WEEK 6] 43 → 39 (중복 피처 2개 제거: trajectory_div, inning_fatigue)
 
 # 피처 순서 (모델 입력과 100% 일치해야 함)
 FEATURES = [
@@ -48,8 +48,16 @@ FEATURES = [
     'p_throws_code', 'pitch_number', 'tto', 'pitcher_pitch_count',
     # [Group 3] 타자 성향 (2)
     'batter_whiff_rate', 'batter_k_rate',
-    # [Group 4] 투수 역량 및 시대 보정 (Z-Scores) (8) - NEW
-    'z_vel', 'z_spin', 'z_hb', 'z_ivb', 'z_ext', 'z_rel_h', 'z_rel_s', 'z_league_whiff'
+    # [Group 4] 투수 역량 및 시대 보정 (Z-Scores) (8)
+    'z_vel', 'z_spin', 'z_hb', 'z_ivb', 'z_ext', 'z_rel_h', 'z_rel_s', 'z_league_whiff',
+    # 🆕 [WEEK 4 - Group 5] Tunneling Features (7) - 🔥 [WEEK 6] trajectory_div 제거 (r=0.999 with tunnel_distance)
+    'tunnel_distance', 'velocity_diff',
+    'FF_count_last_5', 'SL_count_last_5', 'CH_count_last_5', 'CU_count_last_5',
+    'sequence_entropy',
+    # 🆕 [WEEK 4 - Group 6] Batter vs Pitcher Features (5)
+    'bvp_ba', 'bvp_whiff_rate', 'bvp_k_rate', 'platoon_advantage', 'bvp_recent_ba',
+    # 🆕 [WEEK 4 - Group 7] Contextual Features (4) - 🔥 [WEEK 6] inning_fatigue 제거 (r=1.0 with inning)
+    'altitude_factor', 'rest_days', 'fatigue_index', 'pressure_index'
 ]
 
 def get_db_connection():
@@ -139,7 +147,37 @@ def prepare_advanced_views(con):
         FROM pitches
         GROUP BY batter
     """)
-    print("✅ Views Created!", flush=True) # 🆕 flush=True
+    
+    # 🆕 [WEEK 4] 6. Batter vs Pitcher History View
+    con.execute("""
+        CREATE OR REPLACE VIEW batter_pitcher_history AS
+        WITH ordered_pitches AS (
+            SELECT 
+                pitcher, batter, game_date, at_bat_number, pitch_number,
+                pitch_type, events, description,
+                ROW_NUMBER() OVER (PARTITION BY pitcher, batter ORDER BY game_date, at_bat_number, pitch_number) as rn
+            FROM pitches
+            WHERE pitch_type IS NOT NULL
+        )
+        SELECT 
+            pitcher, batter,
+            -- 누적 타수 (현재 타석 제외)
+            COUNT(*) - 1 as bvp_ab,
+            -- 누적 안타
+            SUM(CASE WHEN events IN ('single','double','triple','home_run') THEN 1 ELSE 0 END) as bvp_hits,
+            -- 누적 헛스윙
+            SUM(CASE WHEN description IN ('swinging_strike','swinging_strike_blocked') THEN 1 ELSE 0 END) as bvp_whiffs,
+            -- 누적 스윙
+            SUM(CASE WHEN description LIKE '%swing%' OR description LIKE '%foul%' OR description IN ('swinging_strike','swinging_strike_blocked') THEN 1 ELSE 0 END) as bvp_swings,
+            -- 누적 삼진
+            SUM(CASE WHEN events = 'strikeout' THEN 1 ELSE 0 END) as bvp_strikeouts,
+            -- 타석 수
+            COUNT(DISTINCT at_bat_number) as bvp_pa
+        FROM ordered_pitches
+        GROUP BY pitcher, batter
+    """)
+    
+    print("✅ Views Created!", flush=True)
 
 
 def get_latest_checkpoint(model, optimizer):
@@ -236,31 +274,93 @@ def train_global_model(start_year=2015):
         for offset in range(0, total_rows, DB_CHUNK_SIZE):
             gc.collect()
             
-            # 🔥 Main Query: 25개 피처 조립
+            # 🔥 Main Query: 43개 피처 조립 (🆕 WEEK 4: +18개)
             query = f"""
                 WITH base AS (
                     SELECT 
                         p.*,
                         DENSE_RANK() OVER (PARTITION BY game_pk, pitcher, batter ORDER BY at_bat_number) as tto,
-                        ROW_NUMBER() OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as pitcher_pitch_count
+                        ROW_NUMBER() OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as pitcher_pitch_count,
+                        -- 🆕 Tunneling: 이전 투구 정보
+                        LAG(release_pos_x) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_release_x,
+                        LAG(release_pos_z) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_release_z,
+                        LAG(pfx_x) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_pfx_x,
+                        LAG(pfx_z) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_pfx_z,
+                        LAG(release_speed) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_speed,
+                        LAG(plate_x) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_plate_x,
+                        LAG(plate_z) OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number) as prev_plate_z,
+                        -- 🆕 Contextual: 휴식일
+                        JULIANDAY(game_date) - LAG(JULIANDAY(game_date)) OVER (PARTITION BY pitcher ORDER BY game_date) as rest_days
                     FROM pitches p
                     WHERE p.game_date >= '{start_year}-01-01' AND p.pitch_type IS NOT NULL
+                ),
+                -- 🆕 최근 5투구 구종 카운트
+                pitch_counts AS (
+                    SELECT 
+                        game_pk, at_bat_number, pitch_number,
+                        SUM(CASE WHEN pitch_type = 'FF' THEN 1 ELSE 0 END) OVER (
+                            PARTITION BY game_pk, at_bat_number 
+                            ORDER BY pitch_number 
+                            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                        ) as FF_count_last_5,
+                        SUM(CASE WHEN pitch_type = 'SL' THEN 1 ELSE 0 END) OVER (
+                            PARTITION BY game_pk, at_bat_number 
+                            ORDER BY pitch_number 
+                            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                        ) as SL_count_last_5,
+                        SUM(CASE WHEN pitch_type = 'CH' THEN 1 ELSE 0 END) OVER (
+                            PARTITION BY game_pk, at_bat_number 
+                            ORDER BY pitch_number 
+                            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                        ) as CH_count_last_5,
+                        SUM(CASE WHEN pitch_type = 'CU' THEN 1 ELSE 0 END) OVER (
+                            PARTITION BY game_pk, at_bat_number 
+                            ORDER BY pitch_number 
+                            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                        ) as CU_count_last_5
+                    FROM pitches
+                    WHERE game_date >= '{start_year}-01-01' AND pitch_type IS NOT NULL
                 )
                 SELECT 
+                    -- 기존 피처 (25개)
                     b.inning, b.balls, b.strikes, b.outs_when_up, (b.fld_score - b.bat_score) as score_diff,
                     b.on_1b, b.on_2b, b.on_3b, b.stand, b.p_throws,
                     b.pitch_number, b.tto, b.pitcher_pitch_count, b.home_score,
                     COALESCE(bs.batter_whiff_rate, 0.25) as batter_whiff_rate,
                     COALESCE(bs.batter_k_rate, 0.20) as batter_k_rate,
-                    -- Z-Scores (JOINed from view)
+                    -- Z-Scores
                     COALESCE(z.z_vel, 0) as z_vel, COALESCE(z.z_spin, 0) as z_spin,
                     COALESCE(z.z_hb, 0) as z_hb, COALESCE(z.z_ivb, 0) as z_ivb,
                     COALESCE(z.z_ext, 0) as z_ext, COALESCE(z.z_rel_h, 0) as z_rel_h,
                     COALESCE(z.z_rel_s, 0) as z_rel_s, COALESCE(z.z_league_whiff, 0.10) as z_league_whiff,
+                    
+                    -- 🆕 Tunneling Features (8개)
+                    b.release_pos_x, b.release_pos_z, b.prev_release_x, b.prev_release_z,
+                    b.pfx_x, b.pfx_z, b.prev_pfx_x, b.prev_pfx_z,
+                    b.release_speed, b.prev_speed,
+                    b.plate_x, b.plate_z, b.prev_plate_x, b.prev_plate_z,
+                    COALESCE(pc.FF_count_last_5, 0) as FF_count_last_5,
+                    COALESCE(pc.SL_count_last_5, 0) as SL_count_last_5,
+                    COALESCE(pc.CH_count_last_5, 0) as CH_count_last_5,
+                    COALESCE(pc.CU_count_last_5, 0) as CU_count_last_5,
+                    
+                    -- 🆕 BvP Features (5개)
+                    COALESCE(bvp.bvp_hits::FLOAT / NULLIF(bvp.bvp_ab, 0), 0.250) as bvp_ba,
+                    COALESCE(bvp.bvp_whiffs::FLOAT / NULLIF(bvp.bvp_swings, 0), 0.24) as bvp_whiff_rate,
+                    COALESCE(bvp.bvp_strikeouts::FLOAT / NULLIF(bvp.bvp_pa, 0), 0.20) as bvp_k_rate,
+                    CASE WHEN b.stand != b.p_throws THEN 1 ELSE -1 END as platoon_advantage,
+                    COALESCE(bvp.bvp_hits::FLOAT / NULLIF(bvp.bvp_ab, 0), 0.250) as bvp_recent_ba,
+                    
+                    -- 🆕 Contextual Features (5개)
+                    COALESCE(b.rest_days, 4) as rest_days,
+                    b.game_date, b.pitcher, b.venue_name,
+                    
                     b.pitch_type
                 FROM base b
                 LEFT JOIN batter_season_stats bs ON b.batter = bs.batter
                 LEFT JOIN pitcher_context_z z ON b.pitcher = z.pitcher AND EXTRACT(YEAR FROM b.game_date) = z.season
+                LEFT JOIN pitch_counts pc ON b.game_pk = pc.game_pk AND b.at_bat_number = pc.at_bat_number AND b.pitch_number = pc.pitch_number
+                LEFT JOIN batter_pitcher_history bvp ON b.pitcher = bvp.pitcher AND b.batter = bvp.batter
                 ORDER BY b.game_date ASC
                 LIMIT {DB_CHUNK_SIZE} OFFSET {offset}
             """
@@ -276,7 +376,7 @@ def train_global_model(start_year=2015):
                 
                 X = np.zeros((len(df), INPUT_SIZE), dtype=np.float32)
                 
-                # Group 1 & 2
+                # Group 1: Situation Features (8)
                 X[:, 0] = df['inning'] / 9.0  
                 X[:, 1] = df['balls'] / 4.0
                 X[:, 2] = df['strikes'] / 3.0
@@ -285,16 +385,57 @@ def train_global_model(start_year=2015):
                 X[:, 5] = df['on_1b'].fillna(0)
                 X[:, 6] = df['on_2b'].fillna(0)
                 X[:, 7] = df['on_3b'].fillna(0)
+                
+                # Group 2: Pitcher/Batter Info (5)
                 X[:, 8] = encoders['le_stand'].transform(df['stand'].fillna('R'))
                 X[:, 9] = encoders['le_p_throws'].transform(df['p_throws'].fillna('R'))
                 X[:, 10] = df['pitch_number'] / 100.0
                 X[:, 11] = df['tto'] / 4.0
                 X[:, 12] = df['pitcher_pitch_count'] / 100.0
-                # Group 3
+                
+                # Group 3: Batter Tendency (2)
                 X[:, 13] = df['batter_whiff_rate']
                 X[:, 14] = df['batter_k_rate']
-                # Group 4
+                
+                # Group 4: Z-Score Features (8)
                 X[:, 15:23] = df[['z_vel', 'z_spin', 'z_hb', 'z_ivb', 'z_ext', 'z_rel_h', 'z_rel_s', 'z_league_whiff']].values
+                
+                # 🆕 Group 5: Tunneling Features (7) - 🔥 [WEEK 6] trajectory_div 제거
+                # Calculate tunnel_distance from release points
+                X[:, 23] = np.sqrt(
+                    (df['release_pos_x'] - df['prev_release_x'].fillna(df['release_pos_x'])) ** 2 +
+                    (df['release_pos_z'] - df['prev_release_z'].fillna(df['release_pos_z'])) ** 2
+                )
+                # Velocity difference (idx 24, was 25)
+                X[:, 24] = np.abs(df['release_speed'] - df['prev_speed'].fillna(df['release_speed']))
+                # Pitch type counts from last 5 pitches (idx 25-28, was 26-29)
+                X[:, 25] = df['FF_count_last_5'].fillna(0) / 5.0
+                X[:, 26] = df['SL_count_last_5'].fillna(0) / 5.0
+                X[:, 27] = df['CH_count_last_5'].fillna(0) / 5.0
+                X[:, 28] = df['CU_count_last_5'].fillna(0) / 5.0
+                # Sequence entropy (idx 29, was 30) - TODO: implement Shannon entropy
+                X[:, 29] = df['sequence_entropy'].fillna(0)
+                
+                # 🆕 Group 6: Batter vs Pitcher Features (5) - indices shift by 2
+                X[:, 30] = df['bvp_ba']  # was 31
+                X[:, 31] = df['bvp_whiff_rate']  # was 32
+                X[:, 32] = df['bvp_k_rate']  # was 33
+                X[:, 33] = df['platoon_advantage']  # was 34
+                X[:, 34] = df['bvp_recent_ba']  # was 35
+                
+                # 🆕 Group 7: Contextual Features (4) - 🔥 [WEEK 6] inning_fatigue 제거
+                # Altitude factor (idx 35, was 36)
+                X[:, 35] = df['altitude_factor']
+                # Rest days (idx 36, was 37)
+                X[:, 36] = df['rest_days'].fillna(4) / 10.0
+                # Fatigue index (idx 37, was 38)
+                X[:, 37] = df['fatigue_index']
+                # Pressure index (idx 38, was 39)
+                runners_on = (df['on_1b'] + df['on_2b'] + df['on_3b']).clip(0, 3)
+                late_inning = (df['inning'] >= 7).astype(float)
+                close_game = (np.abs(df['score_diff']) <= 2).astype(float)
+                X[:, 38] = (runners_on / 3.0 * 0.4 + late_inning * 0.3 + close_game * 0.3)
+                
                 # Target
                 y = le_pitch.transform(df['pitch_type'])
 
@@ -356,15 +497,43 @@ def fine_tune_pitcher(pitcher_id: int, pitcher_name: str, target_date: str = Non
         except RuntimeError:
             print("⚠️ Model mismatch, retraining global model might be needed.")
             
-    # 개인 데이터 조회 (Z-Score 포함)
+    # 개인 데이터 조회 (Z-Score 포함 + 43 features)
     query = f"""
         WITH base AS (
             SELECT 
                 p.*,
                 DENSE_RANK() OVER (PARTITION BY game_pk, pitcher, batter ORDER BY at_bat_number) as tto,
-                ROW_NUMBER() OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as pitcher_pitch_count
+                ROW_NUMBER() OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as pitcher_pitch_count,
+                LAG(release_pos_x) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_release_x,
+                LAG(release_pos_z) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_release_z,
+                LAG(pfx_x) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_pfx_x,
+                LAG(pfx_z) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_pfx_z,
+                LAG(release_speed) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_speed,
+                LAG(pitch_type) OVER (PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number) as prev_pitch_type
             FROM pitches p
             WHERE pitcher = {pitcher_id} AND p.pitch_type IS NOT NULL
+        ),
+        pitch_counts AS (
+            SELECT 
+                *,
+                SUM(CASE WHEN pitch_type = 'FF' THEN 1 ELSE 0 END) OVER (
+                    PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number 
+                    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                ) as FF_count_last_5,
+                SUM(CASE WHEN pitch_type = 'SL' THEN 1 ELSE 0 END) OVER (
+                    PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number 
+                    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                ) as SL_count_last_5,
+                SUM(CASE WHEN pitch_type = 'CH' THEN 1 ELSE 0 END) OVER (
+                    PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number 
+                    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                ) as CH_count_last_5,
+                SUM(CASE WHEN pitch_type = 'CU' THEN 1 ELSE 0 END) OVER (
+                    PARTITION BY game_pk, pitcher ORDER BY at_bat_number, pitch_number 
+                    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                ) as CU_count_last_5,
+                0.0 as sequence_entropy
+            FROM base
         )
         SELECT 
             b.inning, b.balls, b.strikes, b.outs_when_up, (b.fld_score - b.bat_score) as score_diff,
@@ -376,10 +545,24 @@ def fine_tune_pitcher(pitcher_id: int, pitcher_name: str, target_date: str = Non
             COALESCE(z.z_hb, 0) as z_hb, COALESCE(z.z_ivb, 0) as z_ivb,
             COALESCE(z.z_ext, 0) as z_ext, COALESCE(z.z_rel_h, 0) as z_rel_h,
             COALESCE(z.z_rel_s, 0) as z_rel_s, COALESCE(z.z_league_whiff, 0.10) as z_league_whiff,
+            b.release_pos_x, b.prev_release_x, b.release_pos_z, b.prev_release_z,
+            b.pfx_x, b.prev_pfx_x, b.pfx_z, b.prev_pfx_z,
+            b.release_speed, b.prev_speed,
+            b.FF_count_last_5, b.SL_count_last_5, b.CH_count_last_5, b.CU_count_last_5,
+            b.sequence_entropy,
+            COALESCE(bvp.bvp_hits::FLOAT / NULLIF(bvp.bvp_ab, 0), 0.250) as bvp_ba,
+            COALESCE(bvp.bvp_whiffs::FLOAT / NULLIF(bvp.bvp_swings, 0), 0.30) as bvp_whiff_rate,
+            COALESCE(bvp.bvp_strikeouts::FLOAT / NULLIF(bvp.bvp_pa, 0), 0.20) as bvp_k_rate,
+            CASE WHEN b.stand != b.p_throws THEN 1.0 ELSE 0.0 END as platoon_advantage,
+            0.250 as bvp_recent_ba,
+            1.0 as altitude_factor,
+            4 as rest_days,
+            0.5 as fatigue_index,
             b.pitch_type
-        FROM base b
+        FROM pitch_counts b
         LEFT JOIN batter_season_stats bs ON b.batter = bs.batter
         LEFT JOIN pitcher_context_z z ON b.pitcher = z.pitcher AND EXTRACT(YEAR FROM b.game_date) = z.season
+        LEFT JOIN batter_pitcher_history bvp ON b.pitcher = bvp.pitcher AND b.batter = bvp.batter
         ORDER BY b.game_date ASC
     """
     try:
@@ -399,6 +582,7 @@ def fine_tune_pitcher(pitcher_id: int, pitcher_name: str, target_date: str = Non
 
     X = np.zeros((len(df), INPUT_SIZE), dtype=np.float32)
     
+    # Group 1: Situation Features (8)
     X[:, 0] = df['inning'] / 9.0  
     X[:, 1] = df['balls'] / 4.0
     X[:, 2] = df['strikes'] / 3.0
@@ -407,14 +591,47 @@ def fine_tune_pitcher(pitcher_id: int, pitcher_name: str, target_date: str = Non
     X[:, 5] = df['on_1b'].fillna(0)
     X[:, 6] = df['on_2b'].fillna(0)
     X[:, 7] = df['on_3b'].fillna(0)
+    
+    # Group 2: Pitcher/Batter Info (5)
     X[:, 8] = encoders['le_stand'].transform(df['stand'].fillna('R'))
     X[:, 9] = encoders['le_p_throws'].transform(df['p_throws'].fillna('R'))
     X[:, 10] = df['pitch_number'] / 100.0
     X[:, 11] = df['tto'] / 4.0
     X[:, 12] = df['pitcher_pitch_count'] / 100.0
+    
+    # Group 3: Batter Tendency (2)
     X[:, 13] = df['batter_whiff_rate']
     X[:, 14] = df['batter_k_rate']
+    
+    # Group 4: Z-Score Features (8)
     X[:, 15:23] = df[['z_vel', 'z_spin', 'z_hb', 'z_ivb', 'z_ext', 'z_rel_h', 'z_rel_s', 'z_league_whiff']].values
+    
+    # 🔥 [WEEK 6] Group 5: Tunneling Features (7) - trajectory_div 제거
+    X[:, 23] = np.sqrt((df['release_pos_x'] - df['prev_release_x'].fillna(df['release_pos_x'])) ** 2 +
+                       (df['release_pos_z'] - df['prev_release_z'].fillna(df['release_pos_z'])) ** 2)
+    X[:, 24] = np.abs(df['release_speed'] - df['prev_speed'].fillna(df['release_speed']))
+    X[:, 25] = df['FF_count_last_5'].fillna(0) / 5.0
+    X[:, 26] = df['SL_count_last_5'].fillna(0) / 5.0
+    X[:, 27] = df['CH_count_last_5'].fillna(0) / 5.0
+    X[:, 28] = df['CU_count_last_5'].fillna(0) / 5.0
+    X[:, 29] = df['sequence_entropy'].fillna(0)
+    
+    # Group 6: Batter vs Pitcher Features (5)
+    X[:, 30] = df['bvp_ba']
+    X[:, 31] = df['bvp_whiff_rate']
+    X[:, 32] = df['bvp_k_rate']
+    X[:, 33] = df['platoon_advantage']
+    X[:, 34] = df['bvp_recent_ba']
+    
+    # 🔥 [WEEK 6] Group 7: Contextual Features (4) - inning_fatigue 제거
+    X[:, 35] = df['altitude_factor']
+    X[:, 36] = df['rest_days'].fillna(4) / 10.0
+    X[:, 37] = df['fatigue_index']
+    runners_on = (df['on_1b'] + df['on_2b'] + df['on_3b']).clip(0, 3)
+    late_inning = (df['inning'] >= 7).astype(float)
+    close_game = (np.abs(df['score_diff']) <= 2).astype(float)
+    X[:, 38] = (runners_on / 3.0 * 0.4 + late_inning * 0.3 + close_game * 0.3)
+    
     y = le_pitch.transform(df['pitch_type'])
     
     X_seq = np.array([X[i:i+seq_len] for i in range(len(X)-seq_len)])

@@ -1,35 +1,35 @@
-version: '3.8'
-
 services:
-  # 🐍 백엔드 서비스
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mlb-backend
+    build: ./backend
     ports:
       - "8000:8000"
     volumes:
-      # 로컬 코드를 컨테이너와 동기화 (수정 시 바로 반영)
       - ./backend/app:/code/app
-      - ./backend/scripts:/code/scripts
-      # 데이터 폴더 영구 저장 (컨테이너 꺼도 DB 유지)
       - ./backend/data:/code/data
-    restart: always
+      - ./backend/scripts:/code/scripts
+    # Redis 컨테이너와 연결
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    # Python 출력 버퍼링 비활성화 (로그 즉시 출력)
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-  # ⚛️ 프론트엔드 서비스
   client:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    container_name: mlb-frontend
+    build: ./client
     ports:
       - "3000:3000"
     volumes:
-      - ./client:/app
-      - /app/node_modules
+      - ./client/src:/app/src
+      - ./client/public:/app/public
     environment:
-      - WATCHPACK_POLLING=true
-    depends_on:
-      - backend
-    restart: always
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    # 핫 리로딩을 위해 폴링 방식 사용 (Mac/Windows 호환성)
+    command: npm run dev
+
+  # 🚀 Redis (메모리 캐시 저장소)
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"

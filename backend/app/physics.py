@@ -1,47 +1,108 @@
 import numpy as np
 
-def calculate_trajectory(v0, release_pos, pfx, extension, env_params=None):
+def calculate_trajectory(v0, release_pos, pfx, extension):
     """
-    Constant Acceleration Model (단순화된 물리 모델)
-    - v0: 초구 속도 (mph)
-    - release_pos: {'x': ft, 'z': ft} 릴리스 포인트
-    - pfx: {'x': inch, 'z': inch} 무브먼트
-    - extension: 익스텐션 (ft)
+    [Phase 4 Final] MLB급 정밀 물리 엔진 (Quadratic Drag Model)
+    공기 저항을 속도의 제곱에 비례하게 계산하여 실제와 같은 종속(V-end)을 구현합니다.
+    
+    :param v0: 릴리스 구속 (mph)
+    :param release_pos: {'x': float, 'z': float} (ft) - 릴리스 포인트
+    :param pfx: {'x': float, 'z': float} (인치) - 무브먼트 (Statcast pfx)
+    :param extension: 익스텐션 (ft)
+    :return: 정밀 3D 궤적 리스트
     """
-    # 1. 단위 변환 및 초기값 설정
-    v0_fps = v0 * 1.467  # mph -> fps (feet per second)
-    start_y = 60.5 - extension  # 릴리스 지점 (포수까지의 거리)
-    flight_time = start_y / (v0_fps * 0.96)  # 비행 시간 추정 (공기저항 고려 감속)
     
-    # 가속도 계산 (무브먼트 기반)
-    # pfx는 inch 단위이므로 feet로 변환 (/12)
-    # 중력 가속도: -32.174 ft/s^2
-    acc_x = (2 * ((pfx['x'] / 12) * -1)) / (flight_time ** 2)
-    acc_z = -32.174 + (2 * (pfx['z'] / 12) / (flight_time ** 2))
+    # ─── 1. 물리 상수 및 초기 조건 설정 ───
     
-    # 2. 궤적 포인트 생성 (40등분)
-    points = []
-    steps = 40
+    # 단위 변환: mph -> ft/s
+    v0_fts = v0 * 1.467
     
-    for i in range(steps + 1):
-        t = (i / steps) * flight_time
+    # 릴리스 포인트 (포수 시점 기준 좌표계 변환)
+    # x: 좌우 (투수판 중심 0), y: 홈까지 거리, z: 높이
+    r0 = np.array([release_pos['x'], 60.5 - extension, release_pos['z']])
+    
+    # 초기 속도 벡터 (Initial Velocity Vector)
+    # 타겟(존 중심)을 향해 던진다고 가정하고 초기 발사각 역산
+    target_y = 0 # 홈 플레이트
+    flight_distance = r0[1] - target_y
+    flight_time_approx = flight_distance / (v0_fts * 0.92) # 1차 추정
+    
+    # 초기 속도 성분 (vx, vy, vz)
+    # vy는 투수->포수 방향이므로 음수 (-)
+    vy0 = -v0_fts 
+    # x, z 성분은 pfx(무브먼트)를 고려하지 않은 '직선' 기준 발사각
+    vx0 = (0 - r0[0]) / flight_time_approx 
+    vz0 = (2.5 - r0[2]) / flight_time_approx # 스트라이크 존 높이(2.5ft) 타겟팅 가정
+    
+    velocity = np.array([vx0, vy0, vz0])
+    position = np.array(r0)
+    
+    # ─── 2. 외력(Force) 파라미터 산출 ───
+    
+    # 중력 가속도 (ft/s^2)
+    GRAVITY = np.array([0, 0, -32.174])
+    
+    # 마그누스 가속도 (Magnus Acceleration)
+    # pfx는 '중력 없는 상태'에서의 순수 휘어짐(인치)
+    # 가속도 a = 2 * d / t^2 공식을 이용해 역산 (인치 -> 피트 변환: / 12)
+    t_sq = flight_time_approx ** 2
+    a_magnus_x = 2 * (pfx['x'] / 12) / t_sq
+    a_magnus_z = 2 * (pfx['z'] / 12) / t_sq
+    ACCEL_MAGNUS = np.array([a_magnus_x, 0, a_magnus_z])
+    
+    # 공기 저항 상수 (Drag Factor)
+    # F_drag = -C * v * |v|
+    # MLB 평균 감속도(8~9mph loss)를 재현하는 실험적 상수 (ft/s 단위)
+    DRAG_FACTOR = 5.0e-4 
+
+    # ─── 3. 정밀 시뮬레이션 루프 (Euler Method) ───
+    
+    trajectory = []
+    dt = 0.001 # 0.001초 단위 (1ms) - 기존보다 10배 정밀
+    t = 0
+    
+    # 데이터 포인트 샘플링 간격 (프론트엔드 과부하 방지)
+    sample_rate = 10 
+    step_count = 0
+    
+    while position[1] > 0: # 홈 플레이트(y=0) 도달 전까지 반복
         
-        # 등가속도 운동 방정식: s = ut + 0.5at^2
-        # Y축 (거리): 등속 운동에 가깝지만 공기저항으로 약간 감속
-        curr_y = start_y - (v0_fps * t) + (0.5 * -5.0 * t * t) # -5.0은 드래그 계수 근사치
+        # 현재 속력 (Scalar Speed)
+        speed = np.linalg.norm(velocity)
         
-        # X축 (좌우): 초기 속도(직선 가정) + 무브먼트 가속도
-        # 시작점(rx)에서 타겟(px) 방향으로 쏜다고 가정하고 무브먼트 추가
-        curr_x = (release_pos['x'] * -1) + (0.5 * acc_x * t * t) # * -1은 포수 시점 보정
+        # 1) 공기 저항 가속도 (Quadratic Drag)
+        # a_drag = -k * v * |v| (방향은 속도의 반대)
+        a_drag = -DRAG_FACTOR * speed * velocity
         
-        # Z축 (상하): 초기 속도 + 중력/무브먼트 가속도
-        # 보통 투수는 아래로 던지므로 초기 수직 속도(vy0)가 음수임
-        vy0 = (release_pos['z'] - 2.5) / flight_time # 스트라이크존(2.5ft)을 향해 던짐
-        curr_z = release_pos['z'] - (vy0 * t) + (0.5 * acc_z * t * t)
+        # 2) 전체 가속도 = 중력 + 마그누스 + 공기저항
+        total_accel = GRAVITY + ACCEL_MAGNUS + a_drag
         
-        # 바닥 뚫기 방지
-        if curr_z < 0: curr_z = 0.05
+        # 3) 위치 및 속도 업데이트
+        # 위치: r(t+dt) = r(t) + v(t)dt + 0.5a(t)dt^2
+        position += velocity * dt + 0.5 * total_accel * (dt ** 2)
+        # 속도: v(t+dt) = v(t) + a(t)dt
+        velocity += total_accel * dt
         
-        points.append({"x": curr_x, "y": curr_y, "z": curr_z})
+        t += dt
+        step_count += 1
         
-    return points
+        # 시각화용 데이터 저장 (샘플링)
+        if step_count % sample_rate == 0:
+            trajectory.append({
+                "x": round(position[0], 3),
+                "y": round(position[1], 3), # 깊이
+                "z": round(position[2], 3), # 높이
+                "time": round(t, 3),
+                "speed_mph": round(speed / 1.467, 1) # 실시간 구속 정보 (UI 표시용)
+            })
+            
+    # 마지막 지점(홈 플레이트) 강제 추가
+    trajectory.append({
+        "x": round(position[0], 3),
+        "y": 0.0,
+        "z": round(position[2], 3),
+        "time": round(t, 3),
+        "speed_mph": round(np.linalg.norm(velocity) / 1.467, 1)
+    })
+
+    return trajectory

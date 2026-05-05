@@ -10,3 +10,9 @@ sqlalchemy
 scipy
 torch   
 shap
+xgboost
+scikit-learn
+pandas
+numpy
+joblib
+redis

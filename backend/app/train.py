@@ -10,9 +10,12 @@ import duckdb
 import gc
 import glob
 from torch.utils.data import TensorDataset, DataLoader
-from sklearn.model_selection import train_test_split
+# ⚠️ [REMOVED] from sklearn.model_selection import train_test_split
 from app.model import PitchLSTM
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+# 🆕 [WEEK 1] Temporal validation utilities
+from app.utils.validation import MLBTemporalValidator
+from app.utils.metrics import MLBMetrics
 
 # ─── 설정 및 경로 ───
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

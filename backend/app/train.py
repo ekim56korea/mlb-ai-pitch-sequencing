@@ -16,6 +16,8 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 # 🆕 [WEEK 1] Temporal validation utilities
 from app.utils.validation import MLBTemporalValidator
 from app.utils.metrics import MLBMetrics
+# 🆕 [WEEK 2] Focal Loss for class imbalance
+from app.losses.focal_loss import WeightedFocalLoss
 
 # ─── 설정 및 경로 ───
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -175,7 +177,7 @@ def initialize_encoders(con):
     return encoders
 
 def train_global_model(start_year=2015):
-    """최종 학습 루프"""
+    """최종 학습 루프 - Focal Loss 적용"""
     print(f"🌍 Starting Global Training Process (Year: {start_year})...", flush=True) # 🆕
 
     con = get_db_connection()
@@ -188,7 +190,39 @@ def train_global_model(start_year=2015):
     
     model = PitchLSTM(INPUT_SIZE, 128, 2, encoders['num_classes']).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.CrossEntropyLoss()
+    
+    # 🆕 [WEEK 2] Step 1: Calculate class counts for weighted Focal Loss
+    print("📊 Calculating class distribution for Focal Loss...", flush=True)
+    class_query = """
+        SELECT pitch_type, COUNT(*) as count 
+        FROM pitches 
+        WHERE pitch_type IN ('FF','SL','CH','CU','SI','FC','ST','FS','KC','KN')
+        GROUP BY pitch_type
+        ORDER BY pitch_type
+    """
+    class_df = con.execute(class_query).df()
+    le_pitch = encoders['le_pitch']
+    
+    # Create class_counts array matching encoder order
+    class_counts = np.zeros(len(le_pitch.classes_), dtype=int)
+    for idx, pitch_type in enumerate(le_pitch.classes_):
+        count_row = class_df[class_df['pitch_type'] == pitch_type]
+        if not count_row.empty:
+            class_counts[idx] = count_row['count'].iloc[0]
+        else:
+            class_counts[idx] = 1  # Avoid division by zero
+    
+    print(f"📊 Class Distribution:")
+    for idx, (pitch, count) in enumerate(zip(le_pitch.classes_, class_counts)):
+        print(f"   {pitch}: {count:,} pitches")
+    
+    # 🆕 [WEEK 2] Step 2: Use WeightedFocalLoss instead of CrossEntropyLoss
+    criterion = WeightedFocalLoss(
+        class_counts=class_counts,
+        gamma=2.0,  # Standard focal loss parameter
+        beta=0.999  # Effective number smoothing
+    )
+    print(f"✅ Focal Loss initialized (gamma=2.0, beta=0.999)", flush=True)
     
     start_epoch = get_latest_checkpoint(model, optimizer)
     
@@ -388,7 +422,19 @@ def fine_tune_pitcher(pitcher_id: int, pitcher_name: str, target_date: str = Non
     
     # 학습 수행
     optimizer = optim.Adam(model.parameters(), lr=0.0005) # 낮은 학습률
-    criterion = nn.CrossEntropyLoss()
+    
+    # 🆕 [WEEK 2] Fine-tuning도 Focal Loss 적용
+    # Calculate class distribution for this pitcher
+    pitch_counts = df['pitch_type'].value_counts()
+    class_counts_ft = np.zeros(len(le_pitch.classes_), dtype=int)
+    for idx, pitch_type in enumerate(le_pitch.classes_):
+        if pitch_type in pitch_counts.index:
+            class_counts_ft[idx] = pitch_counts[pitch_type]
+        else:
+            class_counts_ft[idx] = 1
+    
+    criterion = WeightedFocalLoss(class_counts=class_counts_ft, gamma=2.0, beta=0.999)
+    
     tensor_x = torch.FloatTensor(X_seq).to(device)
     tensor_y = torch.LongTensor(y_seq).to(device)
     

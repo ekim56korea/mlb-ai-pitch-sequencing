@@ -221,7 +221,7 @@ class ContextualFeatures:
         else:
             df['season_innings'] = 0.0
         
-        # 4. 피로도 지수 (Fatigue Index)
+        # 4. 피로도 지수 (Fatigue Index) - Universal baseline
         # 높을수록 피로 누적
         df['fatigue_index'] = (
             (df['pitches_last_7d'] / 100.0) / 
@@ -230,6 +230,69 @@ class ContextualFeatures:
         df['fatigue_index'] = df['fatigue_index'].clip(0, 20)  # 상한선
         
         return df
+    
+    @staticmethod
+    def calculate_personalized_fatigue(df: pd.DataFrame) -> pd.Series:
+        """
+        🔥 [WEEK 7] 투수별 개인화된 피로도 지수
+        
+        개선 사항:
+        ----------
+        - 투수별 시즌 평균 7일 투구 수를 baseline으로 사용
+        - 평소 부하 대비 상대적 피로도 계산
+        - 휴식일수 가중치 추가
+        
+        수식:
+        -----
+        Fatigue_personalized = (P_recent / P_avg) × (1 + days_since_rest / 7)
+        
+        여기서:
+        - P_recent: 최근 7일 투구 수
+        - P_avg: 해당 투수의 시즌 평균 7일 투구 수
+        - days_since_rest: 마지막 휴식 이후 일수
+        
+        예시:
+        -----
+        - 평소 80구 투수가 120구 던짐 → 1.5배 부하
+        - 평소 120구 투수가 120구 던짐 → 1.0배 부하 (정상)
+        
+        예상 효과:
+        -----------
+        +0.3-0.5%p 정확도 향상
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            'pitcher', 'pitches_last_7d', 'rest_days' 컬럼 필요
+            (calculate_pitcher_fatigue 실행 후)
+            
+        Returns:
+        --------
+        pd.Series
+            개인화된 피로도 지수 (0-10 스케일)
+        """
+        # 투수별 시즌 평균 7일 투구 수 계산
+        pitcher_avg_workload = (
+            df.groupby('pitcher')['pitches_last_7d']
+            .transform('mean')
+        )
+        
+        # Baseline 대비 상대적 부하
+        # 평균 대비 비율 (1.0 = 평소 수준, 1.5 = 50% 더 많음)
+        relative_workload = df['pitches_last_7d'] / (pitcher_avg_workload + 1e-6)
+        
+        # 휴식일수 가중치
+        # 휴식이 길수록 회복, 짧으면 누적 피로
+        rest_penalty = 1.0 + (df['rest_days'].clip(0, 7).replace(0, 0.5) ** -0.5) / 7
+        
+        # 개인화된 피로도 = 상대적 부하 × 휴식 패널티
+        personalized_fatigue = relative_workload * rest_penalty
+        
+        # 0-10 스케일로 정규화
+        # 1.0 = 평소 수준, 2.0 = 2배 부하
+        normalized = personalized_fatigue.clip(0, 3) * 3.33  # 0-10 range
+        
+        return normalized.fillna(5.0)  # 결측치는 중간값
     
     @staticmethod
     def calculate_game_situation_pressure(df: pd.DataFrame) -> pd.Series:
